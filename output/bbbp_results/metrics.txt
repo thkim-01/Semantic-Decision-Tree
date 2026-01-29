@@ -1,0 +1,30 @@
+==================================================
+BBBP Experiment Results
+==================================================
+
+Accuracy:  0.8533
+Precision: 0.8795
+Recall:    0.9359
+F1-Score:  0.9068
+AUC-ROC:   0.8536
+
+Confusion Matrix:
+[[ 57  40]
+ [ 20 292]]
+
+Tree Structure:
+Total nodes: 181
+Max depth: 10
+
+Feature Importance:
+  functional_groups             : 0.3428
+  num_rotatable_bonds           : 0.1574
+  num_hba                       : 0.1047
+  num_hbd                       : 0.0907
+  num_rings                     : 0.0679
+  mw_category                   : 0.0650
+  num_aromatic_rings            : 0.0575
+  num_heavy_atoms               : 0.0539
+  obeys_lipinski                : 0.0484
+  logp_category                 : 0.0087
+  tpsa_category                 : 0.0031
