@@ -19,6 +19,13 @@ from typing import Dict, List, Optional, Sequence, Set, Tuple
 import numpy as np
 from owlready2 import *
 
+# Pylance/flake8 friendliness: ConstrainedDatatype may not be exposed in all
+# Owlready2 versions (and star-imports hide symbols from type checkers).
+try:
+    from owlready2 import ConstrainedDatatype as _ConstrainedDatatype
+except Exception:  # pragma: no cover
+    _ConstrainedDatatype = None
+
 logger = logging.getLogger(__name__)
 
 
@@ -33,7 +40,7 @@ class DLRefinement:
         value=None,
         operator: Optional[str] = None,
     ):
-        # refinement_type in {'existential', 'value', 'numeric'}
+        # refinement_type in {'existential', 'value', 'numeric', 'isa'}
         self.type = refinement_type
         self.property = property_name
         self.target = target_class
@@ -44,6 +51,8 @@ class DLRefinement:
         return (self.type, self.property, self.target, self.operator, self.value)
 
     def __repr__(self) -> str:
+        if self.type == "isa":
+            return f"isa({self.target})"
         if self.type == "existential":
             return f"∃{self.property}.{self.target}"
         if self.type == "value":
@@ -64,10 +73,14 @@ class DLRefinement:
     def to_owlready_restriction(self, onto):
         """Best-effort conversion to an Owlready2 class expression.
 
+        - isa: NamedClass
         - existential: ObjectProperty some Class
         - value: DataProperty value literal
         - numeric: DataProperty some DatatypeRestriction (OWL2) (best-effort)
         """
+
+        if self.type == "isa":
+            return getattr(onto, self.target, None)
 
         prop = getattr(onto, self.property, None)
         if prop is None:
@@ -86,11 +99,13 @@ class DLRefinement:
             # Numeric comparisons belong to OWL2 datatype restrictions.
             # Owlready2 supports ConstrainedDatatype in recent versions.
             try:
+                if _ConstrainedDatatype is None:
+                    return None
                 base_dt = float if isinstance(self.value, float) else int
                 if self.operator == "<=" and self.value is not None:
-                    dt = ConstrainedDatatype(base_dt, max_inclusive=self.value)
+                    dt = _ConstrainedDatatype(base_dt, max_inclusive=self.value)
                 elif self.operator == ">=" and self.value is not None:
-                    dt = ConstrainedDatatype(base_dt, min_inclusive=self.value)
+                    dt = _ConstrainedDatatype(base_dt, min_inclusive=self.value)
                 elif self.operator == "==" and self.value is not None:
                     return prop.value(self.value)
                 else:
@@ -109,6 +124,7 @@ class RefinementGenerator:
         self.onto = onto
         self._cached_existential: Optional[List[DLRefinement]] = None
         self._cached_boolean: Optional[List[DLRefinement]] = None
+        self._cached_named_classes: Optional[List[DLRefinement]] = None
         self._cache: Dict[Tuple, List[DLRefinement]] = {}
 
     def generate_all_refinements(
@@ -123,6 +139,7 @@ class RefinementGenerator:
         """Generate refinements for a given node.
 
         - Existential + Boolean are cached (schema-derived).
+        - Named-class (isa) refinements are cached (schema-derived).
         - Numeric refinements are generated from *instances* (node-specific).
         """
 
@@ -132,7 +149,8 @@ class RefinementGenerator:
         cache_key = None
         if enable_cache:
             # Note: node-specific numeric thresholds depend on the instance set.
-            # We still cache by (center_signature, n_instances, excluded_signatures)
+            # We still cache by
+            # (center_signature, n_instances, excluded_signatures)
             # which helps when identical subsets appear (or in repeated calls).
             cache_key = (
                 center_signature,
@@ -145,13 +163,14 @@ class RefinementGenerator:
 
         refinements: List[DLRefinement] = []
 
+        named = self._get_named_class_refinements()
         existential = self._get_existential_refinements()
         boolean = self._get_boolean_refinements()
         numeric = self._generate_numeric_refinements(
             instances, max_thresholds_per_prop=max_numeric_thresholds_per_prop
         )
 
-        for r in existential + boolean + numeric:
+        for r in named + existential + boolean + numeric:
             if r not in exclude:
                 refinements.append(r)
 
@@ -223,6 +242,42 @@ class RefinementGenerator:
         self._cached_boolean = refinements
         return refinements
 
+    def _get_named_class_refinements(self) -> List[DLRefinement]:
+        """Generate 'isa(Class)' refinements for inferred/defined subclasses.
+
+        This is the primary hook to exploit semantic enrichment from reasoner:
+        after classification, molecules can become instances of defined classes
+        like AromaticMolecule, LipinskiCompliant, HasAmine, etc.
+
+        We include subclasses of the center class (Molecule) excluding itself.
+        """
+
+        if self._cached_named_classes is not None:
+            return self._cached_named_classes
+
+        refinements: List[DLRefinement] = []
+
+        mol_cls = getattr(self.onto, "Molecule", None)
+        if mol_cls is None:
+            self._cached_named_classes = refinements
+            return refinements
+
+        for cls in mol_cls.descendants():
+            if cls == mol_cls:
+                continue
+            # Avoid obviously irrelevant constructs.
+            if getattr(cls, "name", None) is None:
+                continue
+            refinements.append(
+                DLRefinement(
+                    refinement_type="isa",
+                    target_class=cls.name,
+                )
+            )
+
+        self._cached_named_classes = refinements
+        return refinements
+
     def _generate_numeric_refinements(
         self,
         instances: Sequence,
@@ -271,13 +326,17 @@ class RefinementGenerator:
                 thresholds = mids.tolist()
             else:
                 qs = np.linspace(0.1, 0.9, 9)
-                thresholds = np.quantile(np.array(values, dtype=float), qs).tolist()
+                thresholds = np.quantile(
+                    np.array(values, dtype=float), qs
+                ).tolist()
 
             # Deduplicate and cap
             thresholds = sorted(set([float(t) for t in thresholds]))
             if len(thresholds) > max_thresholds_per_prop:
                 # Evenly sample capped thresholds
-                idxs = np.linspace(0, len(thresholds) - 1, max_thresholds_per_prop)
+                idxs = np.linspace(
+                    0, len(thresholds) - 1, max_thresholds_per_prop
+                )
                 thresholds = [thresholds[int(i)] for i in idxs]
 
             for thr in thresholds:
@@ -295,7 +354,7 @@ class RefinementGenerator:
     def filter_valid_refinements(
         self, refinements: List[DLRefinement], instances: Sequence
     ) -> List[DLRefinement]:
-        """Keep only refinements that split the current instances (0 < sat < n)."""
+        """Keep only refinements that split the instances (0 < sat < n)."""
 
         instances = list(instances)
         n = len(instances)
@@ -318,12 +377,22 @@ class RefinementGenerator:
                 count += 1
         return count
 
-    def instance_satisfies_refinement(self, instance, refinement: DLRefinement) -> bool:
+    def instance_satisfies_refinement(
+        self, instance, refinement: DLRefinement
+    ) -> bool:
         """Check refinement satisfaction against ABox values.
 
         This assumes FunctionalGroup grounding uses individuals:
-            mol.containsFunctionalGroup = [Amine('FG_...'), Nitro('FG_...'), ...]
+            mol.containsFunctionalGroup = [
+                Amine('FG_...'), Nitro('FG_...'), ...
+            ]
         """
+
+        if refinement.type == "isa":
+            target_class = getattr(self.onto, refinement.target, None)
+            if target_class is None:
+                return False
+            return isinstance(instance, target_class)
 
         if refinement.type == "existential":
             prop_values = getattr(instance, refinement.property, [])
