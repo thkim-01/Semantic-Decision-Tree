@@ -5,7 +5,7 @@ BBBP 데이터셋을 OWL 온톨로지로 변환
 
 from owlready2 import *
 from rdkit import Chem
-from rdkit.Chem import Descriptors, Crippen, Lipinski
+from rdkit.Chem import Descriptors, Crippen
 import pandas as pd
 from pathlib import Path
 from typing import Dict, Set
@@ -131,9 +131,25 @@ class BBBPOntologyGenerator:
             class obeysLipinskiRule(DataProperty, FunctionalProperty):
                 domain = [Molecule]
                 range = [bool]
+
+            # ===== DEFINED CLASSES (semantic enrichment via reasoner) =====
+            class AromaticMolecule(Molecule):
+                equivalent_to = [Molecule & hasAromaticRing.value(True)]
+
+            class LipinskiCompliant(Molecule):
+                equivalent_to = [Molecule & obeysLipinskiRule.value(True)]
+
+            # Optional: functional-group derived concepts (useful for semantic splits)
+            class HasAmine(Molecule):
+                equivalent_to = [Molecule & containsFunctionalGroup.some(Amine)]
+
+            class HasNitro(Molecule):
+                equivalent_to = [Molecule & containsFunctionalGroup.some(Nitro)]
         
-        logger.info(f"✅ Schema created: {len(list(self.onto.classes()))} classes, "
-                   f"{len(list(self.onto.data_properties()))} data properties")
+        logger.info(
+            f"✅ Schema created: {len(list(self.onto.classes()))} classes, "
+            f"{len(list(self.onto.data_properties()))} data properties"
+        )
     
     def detect_functional_groups(self, mol) -> Set[str]:
         """SMARTS 기반 기능기 탐지"""
@@ -196,7 +212,9 @@ class BBBPOntologyGenerator:
         
         return features
     
-    def create_instance(self, idx: int, smiles: str, label: int, features: Dict):
+    def create_instance(
+        self, idx: int, smiles: str, label: int, features: Dict
+    ):
         """분자 인스턴스 생성"""
         with self.onto:
             mol = self.onto.Molecule(f"Mol_{idx:05d}")
@@ -221,7 +239,9 @@ class BBBPOntologyGenerator:
             for fg_name in features['functional_groups']:
                 fg_class = getattr(self.onto, fg_name, None)
                 if fg_class:
-                    mol.containsFunctionalGroup.append(fg_class)
+                    # ABox grounding: create FG individual and link it
+                    fg_ind = fg_class(f"FG_{idx:05d}_{fg_name}")
+                    mol.containsFunctionalGroup.append(fg_ind)
     
     def generate_from_csv(self, csv_path: str, limit: int = None):
         """CSV → OWL 변환"""
@@ -245,7 +265,9 @@ class BBBPOntologyGenerator:
                 failed += 1
                 continue
             
-            self.create_instance(idx, row['smiles'], int(row['p_np']), features)
+            self.create_instance(
+                idx, row['smiles'], int(row['p_np']), features
+            )
             success += 1
             
             if (idx + 1) % 200 == 0:
@@ -259,9 +281,8 @@ class BBBPOntologyGenerator:
         
         size_kb = Path(self.output_path).stat().st_size / 1024
         logger.info(f"💾 Saved: {self.output_path} ({size_kb:.1f} KB)")
-        
-        return self.onto
 
+        return self.onto
 
 if __name__ == "__main__":
     generator = BBBPOntologyGenerator()
