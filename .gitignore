@@ -17,3 +17,8 @@ env/
 .DS_Store
 Thumbs.db
 .vscode/
+
+# Run artifacts / logs
+log.md
+*.log
+logs/
