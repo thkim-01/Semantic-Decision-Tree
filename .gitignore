@@ -22,3 +22,10 @@ Thumbs.db
 log.md
 *.log
 logs/
+
+# Inference cache (generated locally to skip repeated reasoner runs)
+ontology/bbbp_inferred.owl
+ontology/bbbp_inferred.meta.json
+
+# Per-run experiment outputs (keep output/bbbp_results/ as a static example)
+output/bbbp_results_*/

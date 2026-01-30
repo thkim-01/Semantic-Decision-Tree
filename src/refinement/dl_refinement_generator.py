@@ -17,7 +17,6 @@ import logging
 from typing import Dict, List, Optional, Sequence, Set, Tuple
 
 import numpy as np
-from owlready2 import *
 
 # Pylance/flake8 friendliness: ConstrainedDatatype may not be exposed in all
 # Owlready2 versions (and star-imports hide symbols from type checkers).
@@ -48,7 +47,13 @@ class DLRefinement:
         self.operator = operator
 
     def signature(self) -> Tuple:
-        return (self.type, self.property, self.target, self.operator, self.value)
+        return (
+            self.type,
+            self.property,
+            self.target,
+            self.operator,
+            self.value,
+        )
 
     def __repr__(self) -> str:
         if self.type == "isa":
@@ -103,9 +108,13 @@ class DLRefinement:
                     return None
                 base_dt = float if isinstance(self.value, float) else int
                 if self.operator == "<=" and self.value is not None:
-                    dt = _ConstrainedDatatype(base_dt, max_inclusive=self.value)
+                    dt = _ConstrainedDatatype(
+                        base_dt, max_inclusive=self.value
+                    )
                 elif self.operator == ">=" and self.value is not None:
-                    dt = _ConstrainedDatatype(base_dt, min_inclusive=self.value)
+                    dt = _ConstrainedDatatype(
+                        base_dt, min_inclusive=self.value
+                    )
                 elif self.operator == "==" and self.value is not None:
                     return prop.value(self.value)
                 else:
@@ -148,7 +157,7 @@ class RefinementGenerator:
 
         cache_key = None
         if enable_cache:
-            # Note: node-specific numeric thresholds depend on the instance set.
+            # Note: node-specific numeric thresholds depend on instance set.
             # We still cache by
             # (center_signature, n_instances, excluded_signatures)
             # which helps when identical subsets appear (or in repeated calls).

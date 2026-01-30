@@ -1,11 +1,25 @@
-"""
-OWL 온톨로지 로더 + HermiT Reasoner 통합
-논문 SDT의 핵심: DL Reasoning 기반 Instance Retrieval
+"""src.ontology.ontology_loader
+
+OWL 온톨로지 로더 + HermiT / Pellet Reasoner 통합.
+
+실험/학습 실행 시 Owlready2 reasoner가 매우 많은 "Reparenting ..." 로그를
+stdout/stderr로 출력할 수 있어, 기본적으로는 해당 출력을 억제한다.
 """
 
-from owlready2 import *
-from typing import List, Set, Dict, Tuple
+from __future__ import annotations
+
+import contextlib
 import logging
+import os
+from typing import List
+
+from owlready2 import (
+    get_ontology,
+    set_log_level,
+    sync_reasoner,
+    sync_reasoner_hermit,
+    sync_reasoner_pellet,
+)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -23,30 +37,72 @@ class OntologyLoader:
         """온톨로지 로드"""
         logger.info(f"Loading ontology: {self.owl_path}")
         self.onto = get_ontology(self.owl_path).load()
-        logger.info(f"✅ Loaded: {len(list(self.onto.individuals()))} instances")
+        logger.info(
+            f"✅ Loaded: {len(list(self.onto.individuals()))} instances"
+        )
         return self.onto
+
+    def save(self, owl_path: str):
+        """Save the currently loaded ontology to a file."""
+
+        if self.onto is None:
+            raise ValueError("Ontology not loaded!")
+        self.onto.save(file=owl_path)
     
-    def run_reasoner(self, reasoner="HermiT"):
-        """Reasoner 실행"""
+    @staticmethod
+    @contextlib.contextmanager
+    def _suppress_output(enabled: bool):
+        if not enabled:
+            yield
+            return
+        with open(os.devnull, "w", encoding="utf-8") as devnull:
+            with contextlib.redirect_stdout(
+                devnull
+            ), contextlib.redirect_stderr(devnull):
+                yield
+
+    def run_reasoner(
+        self,
+        reasoner: str = "HermiT",
+        *,
+        suppress_output: bool = True,
+    ):
+        """Run a DL reasoner (HermiT / Pellet) to enrich class memberships.
+
+        Args:
+            reasoner: "HermiT" (default), "Pellet", or "sync_reasoner".
+            suppress_output: If True, suppresses noisy Owlready2 stdout/stderr.
+        """
         if self.onto is None:
             raise ValueError("Ontology not loaded!")
         
         logger.info(f"Running {reasoner} reasoner...")
-        
-        with self.onto:
+
+        # Reduce Owlready internal logging; this does not always cover all
+        # prints, so we also optionally redirect stdout/stderr.
+        if suppress_output:
             try:
-                if reasoner.lower() == "hermit":
-                    sync_reasoner_hermit(infer_property_values=True)
-                elif reasoner.lower() == "pellet":
-                    sync_reasoner_pellet(infer_property_values=True)
-                else:
-                    sync_reasoner(infer_property_values=True)
-                
-                self.reasoner_synced = True
-                logger.info("✅ Reasoning complete!")
-            except Exception as e:
-                logger.warning(f"Reasoner failed: {e}. Continuing without reasoning.")
-                self.reasoner_synced = False
+                set_log_level(0)
+            except Exception:
+                pass
+
+        with self._suppress_output(suppress_output):
+            with self.onto:
+                try:
+                    if reasoner.lower() == "hermit":
+                        sync_reasoner_hermit(infer_property_values=True)
+                    elif reasoner.lower() == "pellet":
+                        sync_reasoner_pellet(infer_property_values=True)
+                    else:
+                        sync_reasoner(infer_property_values=True)
+
+                    self.reasoner_synced = True
+                    logger.info("✅ Reasoning complete!")
+                except Exception as e:
+                    logger.warning(
+                        f"Reasoner failed: {e}. Continuing without reasoning."
+                    )
+                    self.reasoner_synced = False
     
     def get_instances(self, class_name: str) -> List:
         """특정 클래스의 모든 인스턴스 반환"""
